@@ -1,0 +1,8 @@
+# Ignore environment and runtime files
+.env
+airflow-logs/
+postgres-db/
+*.pyc
+__pycache__/
+*.log
+.DS_Store

@@ -1,0 +1,120 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# dags_config.yml
+# Configuración centralizada de todos los DAGs del proyecto.
+# El archivo dag_factory.py lee este YAML y crea los DAGs en Airflow.
+# ─────────────────────────────────────────────────────────────────────────────
+
+defaults:
+  owner: index_analysis
+  depends_on_past: false
+  email_on_failure: false
+  retries: 1
+  retry_delay_minutes: 5
+  catchup: false
+  start_date: "2026-04-09"
+
+dags:
+
+  # ── Pipeline completo diario ───────────────────────────────────────────────
+  pipeline_index_analysis:
+    description: "Pipeline diario completo: ingesta + dbt + transcripts"
+    schedule: "0 6 * * 1-5"
+    tags: [pipeline, daily]
+    retries: 1
+    tasks:
+      - id: load_prices_alpha_vantage
+        type: bash
+        timeout_hours: 2
+        command: >
+          set -x &&
+          cd {PROJECT} &&
+          python src/alpha_vantage_to_snowflake.py
+          --from-csv --type stock --outputsize compact --limit 100
+
+      - id: dbt_seed
+        type: bash
+        timeout_minutes: 10
+        depends_on: [load_prices_alpha_vantage]
+        command: >
+          set -x &&
+          cd {PROJECT} &&
+          dbt seed --profiles-dir {PROJECT} --project-dir {PROJECT}
+
+      - id: dbt_run
+        type: bash
+        timeout_minutes: 20
+        depends_on: [dbt_seed]
+        command: >
+          set -x &&
+          cd {PROJECT} &&
+          dbt run --debug --profiles-dir {PROJECT} --project-dir {PROJECT}
+
+      - id: dbt_test
+        type: bash
+        timeout_minutes: 10
+        depends_on: [dbt_run]
+        command: >
+          set -x &&
+          cd {PROJECT} &&
+          dbt test --debug --profiles-dir {PROJECT} --project-dir {PROJECT}
+
+      - id: youtube_transcripts
+        type: bash
+        timeout_hours: 3
+        depends_on: [dbt_test]
+        command: >
+          set -x &&
+          cd {PROJECT} &&
+          python src/multi_channel_transcripts.py
+          --days 14 --max-total 50 --no-snowflake
+
+  # ── Solo ingesta Alpha Vantage ─────────────────────────────────────────────
+  ingestion_alpha_vantage:
+    description: "Extrae precios de Alpha Vantage y carga RAW_STOCK_DAILY"
+    schedule: "0 6 * * 1-5"
+    tags: [ingestion, alpha-vantage, snowflake]
+    retries: 1
+    retry_delay_minutes: 10
+    params:
+      type: stock
+      limit: 100
+      outputsize: compact
+    tasks:
+      - id: load_prices_alpha_vantage
+        type: bash
+        timeout_hours: 2
+        command: >
+          set -x &&
+          cd {PROJECT} &&
+          python src/alpha_vantage_to_snowflake.py
+          --from-csv
+          --type '{{{{ params.type }}}}'
+          --outputsize '{{{{ params.outputsize }}}}'
+          --limit {{{{ params.limit }}}}
+
+      - id: dbt_seed
+        type: bash
+        timeout_minutes: 10
+        depends_on: [load_prices_alpha_vantage]
+        command: >
+          set -x &&
+          cd {PROJECT} &&
+          dbt seed --profiles-dir {PROJECT} --project-dir {PROJECT}
+
+  # ── dbt full-refresh manual ────────────────────────────────────────────────
+  dbt_full_refresh:
+    description: "Recrea todas las tablas/vistas dbt desde cero (--full-refresh)"
+    schedule: ~
+    tags: [dbt, full-refresh]
+    retries: 0
+    params:
+      select: ""
+    tasks:
+      - id: dbt_full_refresh
+        type: bash
+        timeout_minutes: 30
+        command: >
+          set -x &&
+          cd {PROJECT} &&
+          dbt run --debug --full-refresh
+          --profiles-dir {PROJECT} --project-dir {PROJECT}
