@@ -1,0 +1,51 @@
+# Azure DevOps pipeline for Index Analysis DAGs
+# Conecta este repo GitHub con Azure DevOps y selecciona este YAML.
+
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+
+pr:
+  branches:
+    include:
+      - main
+      - develop
+
+name: DAGs-CI $(Date:yyyyMMdd).$(Rev:r)
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+  - checkout: self
+    displayName: "Checkout repository"
+
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.11'
+    displayName: "Use Python 3.11"
+
+  - script: |
+      python -m pip install --quiet --upgrade pip
+    displayName: "Upgrade pip"
+
+  - script: |
+      python -m compileall dags plugins
+    displayName: "Validate Python syntax"
+
+  - script: |
+      docker compose -f docker-compose-airflow.yml config
+    displayName: "Validate Docker Compose configuration"
+
+  - script: |
+      docker build -f Dockerfile.airflow -t index-analysis-dags-airflow .
+    displayName: "Build Airflow image"
+
+  - task: PublishBuildArtifacts@1
+    condition: always()
+    inputs:
+      pathToPublish: logs
+      artifactName: dag-logs
+    displayName: "Publish logs"
